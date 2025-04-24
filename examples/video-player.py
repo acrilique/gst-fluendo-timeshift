@@ -74,12 +74,12 @@ class Player(object):
         hbox.set_spacing (5)
         hbox.set_orientation(Gtk.Orientation.HORIZONTAL)
 
-        self.stop_button = Gtk.Button(label='Stop')
-        def stop_button_press_cb(widget, event):
+        self.live_button = Gtk.Button(label='Live')
+        def live_button_press_cb(widget, event):
             self.seek_end()
-        self.stop_button.connect('button-press-event', stop_button_press_cb)
+        self.live_button.connect('button-press-event', live_button_press_cb)
 
-        hbox.pack_start(self.stop_button, False, False, 0)
+        hbox.pack_start(self.live_button, False, False, 0)
 
         self.pause_button = Gtk.Button(label='Pause')
         def pause_button_press_cb(widget, event):
