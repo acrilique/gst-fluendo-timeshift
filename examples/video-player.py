@@ -41,13 +41,13 @@ import sys
 
 import gi
 gi.require_version('Gst', '1.0')
+gi.require_version('Gtk', '3.0')
+gi.require_version('GstVideo', '1.0')
 from gi.repository import GObject, Gtk, Gst
 
 # Needed for window.get_xid(), xvimagesink.set_window_handle(), respectively:
 from gi.repository import GdkX11, GstVideo
 
-
-GObject.threads_init()
 Gst.init(None)
 
 class Player(object):
@@ -88,7 +88,7 @@ class Player(object):
 
         hbox.pack_start(self.pause_button, False, False, 0)
 
-        self.adjustment = Gtk.Adjustment(0.0, 0.00, 100.0, 0.1, 1.0, 1.0)
+        self.adjustment = Gtk.Adjustment(value=0.0, lower=0.0, upper=100.0, step_increment=0.1, page_increment=1.0, page_size=1.0)
         self.scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.adjustment)
         self.scale.set_digits(0)
         self.scale.set_hexpand(True)
@@ -105,13 +105,13 @@ class Player(object):
         hbox2.set_spacing(5)
         hbox2.set_orientation(Gtk.Orientation.HORIZONTAL)
 
-        self.label_duration = Gtk.Label('duration: --:--')
+        self.label_duration = Gtk.Label(label='duration: --:--')
         hbox2.pack_start(self.label_duration, False, False, 0)
 
-        self.label_buf_begin = Gtk.Label('buffer begin: --:--')
+        self.label_buf_begin = Gtk.Label(label='buffer begin (bytes): 0')
         hbox2.pack_start(self.label_buf_begin, False, False, 0)
 
-        self.label_buf_end = Gtk.Label('buffer end: --:--')
+        self.label_buf_end = Gtk.Label(label='buffer end (bytes): 0')
         hbox2.pack_start(self.label_buf_end, False, False, 0)
 
         box.pack_start(hbox2, False, False, 0)
@@ -145,15 +145,15 @@ class Player(object):
         ts = self.pipeline.get_by_name("timeshifter");
         if ts:
             def overrun_handler(obj):
-                print 'Received overrun signal'
+                print ('Received overrun signal')
                 buf_begin, _ = self.query_buffering()
                 seek_to = buf_begin + 2 * Gst.SECOND
-                print 'Will seek to %s' % self.format_time(seek_to)
+                print ('Will seek to %s' % self.format_time(seek_to))
                 self.seek(seek_to)
                 self.pipeline.set_state(Gst.State.PLAYING)
 
             ts.connect('overrun', overrun_handler)
-            print 'Registered overrun handler'
+            print ('Registered overrun handler')
 
         self.update_id = GObject.timeout_add(1000, self.update_scale_cb)
 
@@ -188,7 +188,7 @@ class Player(object):
         if self.pipeline.query(buffering):
             _, buf_start, buf_end, _ = buffering.parse_buffering_range()
         else:
-            print 'Buffering query failed'
+            print ('Buffering query failed')
             buf_start = 0
             buf_end = 0;
 
@@ -228,16 +228,16 @@ class Player(object):
             msg.src.set_window_handle(self.xid)
 
     def seek(self, location):
-        #print 'seeking to %r' % location
+        print('seeking to %r' % location)
         res = self.pipeline.seek(1.0, Gst.Format.TIME,
             Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE,
             Gst.SeekType.SET, location,
             Gst.SeekType.NONE, 0)
 
-        #if res:
-        #    print 'setting new stream time to 0'
-        #else:
-        #    print 'seek to %r failed' % location
+        if res:
+           print('setting new stream time to 0')
+        else:
+           print('seek to %r failed' % location)
 
     def seek_end(self):
         res = self.pipeline.seek(1.0, Gst.Format.TIME,
@@ -245,18 +245,20 @@ class Player(object):
             Gst.SeekType.END, -1,
             Gst.SeekType.NONE, 0)
 
-        #if res:
-        #    print 'setting new stream time to 0'
-        #else:
-        #    print 'seek to end failed'
+        if res:
+           print('setting new stream time to 0')
+        else:
+           print('seek to end failed')
 
     def pause(self):
         if self.pause_button.get_label() == 'Pause':
             self.pause_button.set_label('Play')
             state = Gst.State.PAUSED;
+            print('pause button pressed - setting state to PAUSED')
         else:
             self.pause_button.set_label('Pause')
             state = Gst.State.PLAYING
+            print('pause button pressed - setting state to PLAYING')
 
         self.pipeline.set_state(state)
 
@@ -274,7 +276,7 @@ class Player(object):
                 self.scale_value_changed_cb)
 
     def scale_value_changed_cb(self, scale):
-        real = long(scale.get_value() * self.duration / 100) # in ns
+        real = int(scale.get_value() * self.duration / 100) # in ns
         #print 'value changed, perform seek to %r' % real
         self.seek(real)
         # allow for a preroll
