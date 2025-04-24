@@ -20,6 +20,7 @@
 #include "gsttsshifterbin.h"
 #include "tscache.h"
 #include "tsindex.h"
+#include <gst/mpegts/mpegts.h>
 
 GST_DEBUG_CATEGORY_EXTERN (ts_shifterbin);
 #define GST_CAT_DEFAULT ts_shifterbin
@@ -202,16 +203,22 @@ gst_ts_shifter_bin_handle_message (GstBin * bin, GstMessage * msg)
   GstTSShifterBin *ts_bin = GST_TS_SHIFTER_BIN (bin);
 
   if (gst_message_has_name (msg, "pmt")) {
-    guint pcr_pid;
-
-    const GstStructure *gs = gst_message_get_structure (msg);
-
-    if (!gst_structure_get_uint (gs, "pcr-pid", &pcr_pid)) {
-      GST_ERROR ("Cannot extract PCR PID");
+    GstMpegtsSection *section;
+    const GstMpegtsPMT *pmt;
+    
+    section = gst_message_parse_mpegts_section (msg);
+    if (section) {
+      pmt = gst_mpegts_section_get_pmt (section);
+      if (pmt) {
+        GST_DEBUG ("Setting PCR PID: %u", pmt->pcr_pid);
+        g_object_set (ts_bin->indexer, "pcr-pid", pmt->pcr_pid, NULL);
+      } else {
+        GST_ERROR ("Failed to get PMT from section");
+      }
+      gst_mpegts_section_unref (section);
+    } else {
+      GST_ERROR ("Failed to parse MPEGTS section from message");
     }
-
-    GST_DEBUG ("Setting PCR PID: %u", pcr_pid);
-    g_object_set (ts_bin->indexer, "pcr-pid", pcr_pid, NULL);
   }
 
   GST_BIN_CLASS (gst_ts_shifter_bin_parent_class)
