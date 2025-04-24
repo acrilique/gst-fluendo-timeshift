@@ -291,7 +291,7 @@ gst_ts_index_add_associationv (GstTSIndex * index,
   entry->id = id;
   entry->data.assoc.flags = flags;
   entry->data.assoc.assocs =
-      g_memdup (list, sizeof (GstTSIndexAssociation) * n);
+      g_memdup2 (list, sizeof (GstTSIndexAssociation) * n);
   entry->data.assoc.nassocs = n;
 
   gst_ts_index_add_entry (index, entry);
