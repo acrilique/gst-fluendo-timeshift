@@ -57,6 +57,7 @@ class Player(object):
         self.pcr_configured = False
         self.is_recording = False
         self.changed_id = -1
+        self.initial_seek_done = False
 
         self.window = Gtk.Window()
         self.window.connect('destroy', self.quit)
@@ -124,6 +125,7 @@ class Player(object):
         self.bus.add_signal_watch()
         self.bus.connect('message::eos', self.on_eos)
         self.bus.connect('message::error', self.on_error)
+        self.bus.connect('message::state-changed', self.on_state_changed)
 
         # This is needed to make the video output in our DrawingArea:
         self.bus.enable_sync_message_emission()
@@ -241,7 +243,7 @@ class Player(object):
 
     def seek_end(self):
         res = self.pipeline.seek(1.0, Gst.Format.TIME,
-            Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE,
+            Gst.SeekFlags.FLUSH,
             Gst.SeekType.END, -1,
             Gst.SeekType.NONE, 0)
 
@@ -301,6 +303,17 @@ class Player(object):
     def on_error(self, bus, msg):
         print('on_error():', msg.parse_error())
 
+    def on_state_changed(self, bus, msg):
+        # Filter messages to only react to pipeline state changes
+        if msg.src == self.pipeline:
+            old_state, new_state, pending_state = msg.parse_state_changed()
+            print(f"Pipeline state changed from {old_state.value_nick} to {new_state.value_nick}")
+            # Check for the specific transition from PAUSED to PLAYING
+            if old_state == Gst.State.PAUSED and new_state == Gst.State.PLAYING and not self.initial_seek_done:
+                self.seek_end()
+                self.initial_seek_done = True
+            elif new_state == Gst.State.READY or new_state == Gst.State.NULL:
+                self.initial_seek_done = False
 def main(argv):
     if len(sys.argv) == 1:
         '''
