@@ -70,6 +70,7 @@ struct _GstTSShifter
   gchar *allocator_name;
 
   GstEvent *stream_start_event;
+  GstEvent *caps_event;
 };
 
 struct _GstTSShifterClass

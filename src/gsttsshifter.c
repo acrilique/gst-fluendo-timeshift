@@ -37,7 +37,7 @@ enum
 };
 
 /* default property values */
-#define DEFAULT_RECORDING_REMOVE   TRUE
+#define DEFAULT_RECORDING_REMOVE   TRUE /* Unused currently */
 #define DEFAULT_MIN_CACHE_SIZE     (4 * CACHE_SLOT_SIZE)        /* 4 cache slots */
 #define DEFAULT_CACHE_SIZE         (256 * 1024 * 1024)  /* 256 MB */
 
@@ -160,6 +160,13 @@ gst_ts_shifter_pop (GstTSShifter * ts)
     ts->stream_start_event = NULL;
   }
 
+  if (ts->caps_event) {
+    if (!gst_pad_push_event (ts->srcpad, ts->caps_event)) {
+      goto caps_failed;
+    }
+    ts->caps_event = NULL;
+  }
+
   if (G_UNLIKELY (ts->need_newsegment)) {
     GstEvent *newsegment;
 
@@ -181,7 +188,7 @@ gst_ts_shifter_pop (GstTSShifter * ts)
   FLOW_MUTEX_UNLOCK (ts);
 
   GST_CAT_LOG_OBJECT (ts_flow, ts,
-      "pushing buffer %p of size %d, offset %" G_GUINT64_FORMAT,
+      "pushing buffer %p of size %" G_GSIZE_FORMAT ", offset %" G_GUINT64_FORMAT,
       buffer, gst_buffer_get_size (buffer), GST_BUFFER_OFFSET (buffer));
 
   ret = gst_pad_push (ts->srcpad, buffer);
@@ -237,6 +244,12 @@ stream_start_failed:
   {
     ts->stream_start_event = NULL;
     GST_CAT_LOG_OBJECT (ts_flow, ts, "push of STREAM_START event failed");
+    return GST_FLOW_FLUSHING;
+  }
+caps_failed:
+  {
+    ts->caps_event = NULL;
+    GST_CAT_LOG_OBJECT (ts_flow, ts, "push of CAPS event failed");
     return GST_FLOW_FLUSHING;
   }
 }
@@ -367,7 +380,7 @@ gst_ts_shifter_chain (GstPad * pad, GstObject * parent, GstBuffer * buffer)
   GstMapInfo map;
 
   GST_CAT_LOG_OBJECT (ts_flow, ts,
-      "received buffer %p of size %d, time %" GST_TIME_FORMAT ", duration %"
+      "received buffer %p of size %" G_GSIZE_FORMAT ", time %" GST_TIME_FORMAT ", duration %"
       GST_TIME_FORMAT, buffer, gst_buffer_get_size (buffer),
       GST_TIME_ARGS (GST_BUFFER_TIMESTAMP (buffer)),
       GST_TIME_ARGS (GST_BUFFER_DURATION (buffer)));
@@ -397,6 +410,22 @@ gst_ts_shifter_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
       FLOW_SIGNAL_ADD (ts);
       FLOW_MUTEX_UNLOCK (ts);
       gst_event_unref (event);
+      break;
+    }
+    case GST_EVENT_CAPS:
+    {
+      /* Explicitly handle CAPS event. Since our pads are static video/mpegts,
+       * we just need to accept the event if it's compatible (which the core
+       * should have already checked before calling the event function).
+       * We don't need to store the caps, just prevent default handling
+       * from potentially failing. */
+      GstCaps *caps;
+      gst_event_parse_caps (event, &caps);
+      GST_CAT_LOG_OBJECT (ts_flow, ts, "received caps event %" GST_PTR_FORMAT, caps);
+      /* Store the event instead of pushing immediately */
+      gst_event_replace (&ts->caps_event, event);
+      gst_event_unref (event);
+      ret = TRUE; /* We handled the event */
       break;
     }
     case GST_EVENT_SEGMENT:
@@ -439,6 +468,7 @@ gst_ts_shifter_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
 
       FLOW_MUTEX_LOCK (ts);
       gst_event_replace (&ts->stream_start_event, NULL);
+      gst_event_replace (&ts->caps_event, NULL);
       ts->cur_bytes = 0;
       ts->srcresult = GST_FLOW_OK;
       ts->sinkresult = GST_FLOW_OK;
@@ -474,11 +504,14 @@ gst_ts_shifter_get_bytes_offset (GstTSShifter * ts, GstFormat format,
 {
   guint64 offset;
 
+  GST_INFO_OBJECT (ts, "Get Bytes Offset: Received format %s, type %d, start %" G_GINT64_FORMAT,
+      gst_format_get_name(format), type, start);
+
   if (format != GST_FORMAT_BYTES) {
-    GST_WARNING_OBJECT (ts, "can only seek in bytes");
+    GST_WARNING_OBJECT (ts, "cannot seek in %s format, only BYTES supported", gst_format_get_name(format));
     offset = -1;
   } else {
-    GST_DEBUG_OBJECT (ts, "seeking at bytes %" G_GINT64_FORMAT " type %d",
+    GST_DEBUG_OBJECT (ts, "seeking in BYTES at %" G_GINT64_FORMAT " type %d",
         start, type);
 
     if (type == GST_SEEK_TYPE_SET) {
@@ -487,8 +520,10 @@ gst_ts_shifter_get_bytes_offset (GstTSShifter * ts, GstFormat format,
       offset = gst_ts_cache_get_total_bytes_received (ts->cache) + start;
     } else {
       offset = -1;
+      GST_WARNING_OBJECT (ts, "unsupported seek type %d for BYTES format", type);
     }
   }
+  GST_INFO_OBJECT (ts, "Get Bytes Offset: Calculated offset %" G_GUINT64_FORMAT, offset);
   return offset;
 }
 
@@ -512,9 +547,21 @@ gst_ts_shifter_handle_seek (GstTSShifter * ts, GstEvent * event)
   }
 
   offset = gst_ts_shifter_get_bytes_offset (ts, format, start_type, start);
+
+  /* --- BEGIN DEBUG LOGGING --- */
+  if (ts->cache) {
+    guint64 buf_start, buf_end;
+    gst_ts_cache_buffered_range (ts->cache, &buf_start, &buf_end);
+    GST_INFO_OBJECT (ts, "Handle Seek: Requesting offset %" G_GUINT64_FORMAT ". Cache range: [%" G_GUINT64_FORMAT ", %" G_GUINT64_FORMAT "]. Has offset? %d",
+        offset, buf_start, buf_end, gst_ts_cache_has_offset (ts->cache, offset));
+  } else {
+    GST_WARNING_OBJECT (ts, "Handle Seek: Cache is NULL when checking offset %" G_GUINT64_FORMAT, offset);
+  }
+  /* --- END DEBUG LOGGING --- */
+
   if (G_UNLIKELY (offset == (guint64) - 1
           || !gst_ts_cache_has_offset (ts->cache, offset))) {
-    GST_WARNING_OBJECT (ts, "seek failed");
+    GST_WARNING_OBJECT (ts, "seek failed (offset %" G_GUINT64_FORMAT ")", offset);
     goto beach;
   }
 
@@ -544,6 +591,21 @@ gst_ts_shifter_handle_seek (GstTSShifter * ts, GstEvent * event)
   /* Reconfigure the cache to handle the new offset */
   FLOW_MUTEX_LOCK (ts);
   gst_ts_cache_seek (ts->cache, offset);
+  gst_event_replace (&ts->caps_event, NULL);
+
+  /* Send NEWSEGMENT immediately before restarting the loop */
+  ts->segment.start = offset;
+  ts->segment.time = 0; /* Not relevant for FORMAT_BYTES */
+  /* ts->segment.rate is already set */
+  ts->segment.flags |= GST_SEGMENT_FLAG_RESET;
+
+  GST_DEBUG_OBJECT (ts, "pushing segment %" GST_SEGMENT_FORMAT " after seek", &ts->segment);
+  if (!gst_pad_push_event (ts->srcpad, gst_event_new_segment (&ts->segment))) {
+      GST_WARNING_OBJECT (ts, "Failed to push newsegment event after seek");
+      ts->need_newsegment = TRUE;
+  } else {
+      ts->need_newsegment = FALSE;
+  }
 
   /* Restart the pushing loop */
   ts->srcresult = GST_FLOW_OK;
@@ -570,12 +632,28 @@ gst_ts_shifter_src_event (GstPad * pad, GstObject * parent, GstEvent * event)
     return FALSE;
   }
 
+  GstFormat seek_fmt;
+  GstSeekFlags seek_flags;
+  GstSeekType seek_start_type, seek_stop_type;
+  gint64 seek_start, seek_stop;
+  gdouble seek_rate;
+
   switch (GST_EVENT_TYPE (event)) {
     case GST_EVENT_SEEK:
     {
-      GST_CAT_LOG_OBJECT (ts_flow, ts, "received seek event");
-      /* Do the seek ourself now */
-      ret = gst_ts_shifter_handle_seek (ts, event);
+      gst_event_parse_seek (event, &seek_rate, &seek_fmt, &seek_flags,
+          &seek_start_type, &seek_start, &seek_stop_type, &seek_stop);
+      GST_CAT_INFO_OBJECT (ts_flow, ts, "received seek event (Format: %s, Flags: %d, StartType: %d, Start: %" G_GINT64_FORMAT ")",
+          gst_format_get_name(seek_fmt), seek_flags, seek_start_type, seek_start);
+
+      /* Only handle BYTES format seeks on src pad */
+      if (seek_fmt == GST_FORMAT_BYTES) {
+        /* Do the seek ourself now */
+        ret = gst_ts_shifter_handle_seek (ts, event);
+      } else {
+        GST_CAT_INFO_OBJECT (ts_flow, ts, "Ignoring non-BYTES seek event on src pad");
+        ret = FALSE; /* Don't handle, let default handler potentially drop it */
+      }
       break;
     }
     case GST_EVENT_QOS:
@@ -671,10 +749,10 @@ gst_ts_shifter_query (GstElement * element, GstQuery * query)
         break;
       }
 
-      gst_ts_cache_buffered_range (ts->cache, &bytes_begin, &bytes_end);
-      gst_query_set_buffering_range (query, format, bytes_begin, bytes_end, -1);
+        gst_ts_cache_buffered_range (ts->cache, &bytes_begin, &bytes_end);
+        gst_query_set_buffering_range (query, format, bytes_begin, bytes_end, -1);
 
-      ret = TRUE;
+        ret = TRUE;
       break;
     }
     default:
@@ -805,8 +883,15 @@ gst_ts_shifter_change_state (GstElement * element, GstStateChange transition)
     case GST_STATE_CHANGE_READY_TO_PAUSED:
       gst_ts_shifter_start (ts);
       gst_event_replace (&ts->stream_start_event, NULL);
+      gst_event_replace (&ts->caps_event, NULL);
       break;
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
+      break;
+    /* Clear events when going down */
+    case GST_STATE_CHANGE_PAUSED_TO_READY:
+    case GST_STATE_CHANGE_READY_TO_NULL:
+      gst_event_replace (&ts->stream_start_event, NULL);
+      gst_event_replace (&ts->caps_event, NULL);
       break;
     default:
       break;
@@ -894,6 +979,8 @@ gst_ts_shifter_finalize (GObject * object)
   if (ts->cache) {
     gst_ts_cache_unref (ts->cache);
   }
+  gst_event_replace (&ts->stream_start_event, NULL);
+  gst_event_replace (&ts->caps_event, NULL);
 
   G_OBJECT_CLASS (parent_class)->finalize (object);
 }
@@ -994,6 +1081,7 @@ gst_ts_shifter_init (GstTSShifter * ts)
 
   ts->cache = NULL;
   ts->cache_size = DEFAULT_CACHE_SIZE;
+  ts->caps_event = NULL;
 
   GST_DEBUG_OBJECT (ts, "initialized time shifter");
 }
