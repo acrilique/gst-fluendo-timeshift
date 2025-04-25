@@ -132,6 +132,7 @@ gst_ts_seeker_class_init (GstTSSeekerClass * klass)
 static void
 gst_ts_seeker_init (GstTSSeeker * seeker)
 {
+  seeker->timestamp_next_buffer = FALSE;
 }
 
 static void
@@ -271,24 +272,24 @@ gst_ts_seeker_bytes_to_stream_time (GstTSSeeker * ts, guint64 buffer_offset,
 			GST_TIME_ARGS (time), offset);
     }
     ret = (GstClockTime) time;
-  } else if (buffer_offset < gst_ts_seeker_first_offset (ts)) {
-    /* This means that the upstream returned a segment starting before the first
-     * indexed buffer (the first one that has PCR).
-     */
-    ret = 0;
   } else {
-    if (accurate) {
-      GST_ELEMENT_WARNING (ts, RESOURCE, FAILED,
-          ("Bytes->time conversion failed"),
-          ("Lookup of byte offset %" G_GUINT64_FORMAT " failed: "
-	   "No index entry for that byte offset",
-	   buffer_offset));
+    gint64 first_offset = gst_ts_seeker_first_offset (ts);
+    if (first_offset != -1 && buffer_offset < (guint64)first_offset) {
+      GST_WARNING_OBJECT (ts, "Requested offset %" G_GUINT64_FORMAT " is before first indexed offset %" G_GINT64_FORMAT ", returning first offset", buffer_offset, first_offset);
+      ret = first_offset;
     } else {
-      GST_DEBUG_OBJECT (ts, "no entry for position %" G_GUINT64_FORMAT " in %p",
-			buffer_offset, ts->index);
+      if (accurate) {
+        GST_ELEMENT_WARNING (ts, RESOURCE, FAILED,
+            ("Bytes->time conversion failed"),
+            ("Lookup of byte offset %" G_GUINT64_FORMAT " failed: "
+             "No index entry found before or at that byte offset",
+             buffer_offset));
+      } else {
+        GST_WARNING_OBJECT (ts, "no entry for position %" G_GUINT64_FORMAT " in %p",
+            buffer_offset, ts->index);
+      }
+      ret = GST_CLOCK_TIME_NONE;
     }
-
-    ret = GST_CLOCK_TIME_NONE;
   }
   return ret;
 }
@@ -344,6 +345,7 @@ gst_ts_seeker_sink_event (GstBaseTransform * trans, GstEvent * event)
   GstTSSeeker *seeker = GST_TS_SEEKER (trans);
 
   if (GST_EVENT_TYPE (event) == GST_EVENT_SEGMENT) {
+    seeker->timestamp_next_buffer = TRUE;
     gst_ts_seeker_transform_segment_event (seeker, &event);
   }
   return GST_BASE_TRANSFORM_CLASS (parent_class)->sink_event (trans, event);
@@ -370,7 +372,7 @@ gst_ts_seeker_get_last_time (GstTSSeeker * base)
 {
   guint64 len = gst_ts_seeker_get_duration_bytes (base);
 
-  return gst_ts_seeker_bytes_to_stream_time (base, len - 1000000, FALSE);
+  return gst_ts_seeker_bytes_to_stream_time (base, len - 10000000, FALSE);
 }
 
 static guint64
