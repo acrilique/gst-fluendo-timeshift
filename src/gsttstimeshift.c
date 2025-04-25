@@ -65,5 +65,6 @@ plugin_init (GstPlugin * plugin)
 
 GST_PLUGIN_DEFINE (GST_VERSION_MAJOR, GST_VERSION_MINOR,
     tstimeshift, "MPEG TS Time Shift element",
-    plugin_init, VERSION, "LGPL", PACKAGE_NAME,
-    "http://www.fluendo.com, http://www.youview.com");
+    plugin_init, "1.0.4", "LGPL", "gst-fluendo-timeshift",
+    "http://www.fluendo.com, http://www.youview.com"
+);
