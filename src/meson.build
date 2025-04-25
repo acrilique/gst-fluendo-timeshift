@@ -2,7 +2,7 @@
 timeshift_sources = [
   'gsttsindexer.c',
   'gsttsseeker.c',
-  'gsttsshifter-caps-mod.c',
+  'gsttsshifter.c',
   'gsttsshifterbin.c',
   'gsttstimeshift.c',
   'tscache.c',
