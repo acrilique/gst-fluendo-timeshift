@@ -39,6 +39,7 @@ enum
 };
 
 static void gst_ts_shifter_bin_handle_message (GstBin * bin, GstMessage * msg);
+static GstStateChangeReturn gst_ts_shifter_bin_change_state (GstElement * element, GstStateChange transition);
 
 static GstStaticPadTemplate srctemplate = GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
@@ -132,6 +133,9 @@ gst_ts_shifter_bin_class_init (GstTSShifterBinClass * klass)
   gstbin_class->handle_message =
       GST_DEBUG_FUNCPTR (gst_ts_shifter_bin_handle_message);
 
+  gstelement_class->change_state =
+      GST_DEBUG_FUNCPTR (gst_ts_shifter_bin_change_state);
+
   gst_element_class_set_static_metadata (gstelement_class,
       "Time Shift + TS parser for MPEG TS streams", "Generic/Bin",
       "Provide time shift operations on MPEG TS streams",
@@ -164,10 +168,36 @@ gst_element_clear (GstElement ** elem)
 }
 
 static void
+gst_ts_shifter_bin_perform_initial_seek (GstTSShifterBin * ts_bin)
+{
+  GstEvent *seek_event;
+  
+  if (ts_bin->initial_seek_performed)
+    return;
+    
+  GST_INFO_OBJECT (ts_bin, "Performing initial seek to ensure proper timestamping");
+  
+  seek_event = gst_event_new_seek (1.0, GST_FORMAT_TIME, 
+      GST_SEEK_FLAG_FLUSH, GST_SEEK_TYPE_END, -1, 
+      GST_SEEK_TYPE_NONE, 0);
+      
+  /* Send the seek event to the seeker's src pad */
+  if (gst_element_send_event (ts_bin->seeker, seek_event)) {
+    GST_INFO_OBJECT (ts_bin, "Initial seek successful");
+    ts_bin->initial_seek_performed = TRUE;
+  } else {
+    GST_WARNING_OBJECT (ts_bin, "Initial seek failed");
+  }
+}
+
+static void
 gst_ts_shifter_bin_init (GstTSShifterBin * ts_bin)
 {
   GstIndex *index = NULL;
   GstBin *bin = GST_BIN (ts_bin);
+
+  ts_bin->initial_seek_performed = FALSE;
+  ts_bin->pipeline_is_playing = FALSE;
 
   ts_bin->parser = gst_element_factory_make ("tsparse", "parser");
   ts_bin->indexer = gst_element_factory_make ("tsindexer", "indexer");
@@ -195,6 +225,37 @@ error:
   gst_element_clear (&ts_bin->parser);
   gst_element_clear (&ts_bin->timeshifter);
   gst_element_clear (&ts_bin->seeker);
+}
+
+static GstStateChangeReturn
+gst_ts_shifter_bin_change_state (GstElement * element, GstStateChange transition)
+{
+  GstTSShifterBin *ts_bin = GST_TS_SHIFTER_BIN (element);
+  GstStateChangeReturn ret;
+
+  ret = GST_ELEMENT_CLASS (gst_ts_shifter_bin_parent_class)->change_state (element, transition);
+  if (ret == GST_STATE_CHANGE_FAILURE)
+    return ret;
+
+  switch (transition) {
+    case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
+      ts_bin->pipeline_is_playing = TRUE;
+      GST_INFO_OBJECT (ts_bin, "Pipeline reached PLAYING state");
+      /* Check if we already have enough PCRs and need to seek now */
+      if (!ts_bin->initial_seek_performed) {
+        GST_INFO_OBJECT (ts_bin, "Enough PCRs received before PLAYING, performing initial seek now");
+        gst_ts_shifter_bin_perform_initial_seek (ts_bin);
+      }
+      break;
+    case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
+      ts_bin->pipeline_is_playing = FALSE;
+      GST_INFO_OBJECT (ts_bin, "Pipeline left PLAYING state");
+      break;
+    default:
+      break;
+  }
+
+  return ret;
 }
 
 static void

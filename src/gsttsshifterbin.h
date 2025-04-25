@@ -45,6 +45,9 @@ struct _GstTSShifterBin
   GstElement *indexer;
   GstElement *timeshifter;
   GstElement *seeker;
+
+  gboolean initial_seek_performed;
+  gboolean pipeline_is_playing;
 };
 
 struct _GstTSShifterBinClass
